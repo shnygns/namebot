@@ -102,7 +102,7 @@ def authorized_chat_check(handler_function):
 
 async def delete_message_after_delay(message:Message):
     try:
-        await asyncio.sleep(3)  # Wait for 3 seconds
+        await asyncio.sleep(5)  # Wait for 3 seconds
         await namebot.delete_message(chat_id=message.chat_id, message_id=message.message_id)
     except Exception as e:
         logging.warning("Error deleting message.")
@@ -146,7 +146,7 @@ async def send_ban_confirmation_message_to_chat(chat_id: int, user_id: int, matc
             f"User {user_id} has been banned for having the word {matched_string} in his name.", 
             parse_mode=ParseMode.HTML
         )
-        logging.error(f"User {user_id} has been banned for having the word {matched_string} in his name.")
+        logging.warning(f"User {user_id} has been banned for having the word {matched_string} in his name.")
 
         asyncio.create_task(delete_message_after_delay(message))
     except Exception as e:
@@ -160,7 +160,7 @@ async def handle_message(update: Update, context: CallbackContext):
         if not active:
             return
         
-        if update.message is None or hasattr(update.message, "chat") is False or update.message.chat is None:
+        if update.message is None or hasattr(update.message, "chat") is False or update.message.chat is None or update.message.from_user is None:
             return
 
         chat_type = update.message.chat.type
