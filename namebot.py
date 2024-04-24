@@ -11,6 +11,7 @@ import logging
 from logging.handlers import TimedRotatingFileHandler
 import asyncio
 import re
+from functools import wraps
 from telegram import Update, Message
 from telegram.constants import ChatType, ParseMode
 
@@ -23,7 +24,8 @@ from telegram.ext import (
 )
 from config import (
     BOT_TOKEN,
-    BANNED_WORDS
+    BANNED_WORDS,
+    AUTHORIZED_ADMINS
 
 )
 
@@ -55,9 +57,47 @@ logging.getLogger().addHandler(console_handler)
 # Global variables
 namebot = None
 app = None
-admin_chats = []
+authorized_chats = []
 regex_pattern = re.compile('|'.join(map(re.escape, BANNED_WORDS)), re.IGNORECASE)
 active = True
+authorized_admin_set = set(AUTHORIZED_ADMINS)
+
+
+# Custom decorator function to check if the requesting user is authorized (use for commands).
+def authorized_admin_check(handler_function):
+    @wraps(handler_function)
+    async def wrapper(update: Update, context: CallbackContext):
+        try:
+            user_id = update.effective_user.id
+            if AUTHORIZED_ADMINS and user_id not in AUTHORIZED_ADMINS:
+                return 
+            else:
+                return await handler_function(update, context)
+
+        except Exception as e:
+            logging.warning(f"An error occured in authorized_admin_check(): {e}")
+            return
+    return wrapper
+
+
+def authorized_chat_check(handler_function):
+    @wraps(handler_function)
+    async def wrapper(update: Update, context: CallbackContext):
+        try:
+            chat_id=update.effective_chat.id
+            if chat_id in authorized_chats:
+                return await handler_function(update, context)
+            
+            is_auth = await is_chat_authorized(chat_id)
+            if is_auth:
+                return await handler_function(update, context)
+            else:
+                return
+
+        except Exception as e:
+            logging.warning(f"An error occured in authorized_admin_check(): {e}")
+            return
+    return wrapper
 
 
 async def delete_message_after_delay(message:Message):
@@ -69,18 +109,24 @@ async def delete_message_after_delay(message:Message):
     return
 
 
-async def is_bot_admin_in_chat(chat_id: int):
+async def is_chat_authorized(chat_id: int):
+    if chat_id in authorized_chats:
+        return True
     try:
-        if namebot.id in admin_chats:
-            return
-        chat_member = await namebot.get_chat_member(chat_id, namebot.id)
-        is_admin = chat_member.status == "administrator" or chat_member.status == "creator"
-        if is_admin:
-            admin_chats.append(chat_id)
-    except Exception as e:
-        logging.error(f"Error checking if bot is admin in chat {chat_id}: {e}")
+        chat_admins = await namebot.get_chat_administrators(chat_id)
+        admin_ids = {admin.user.id for admin in chat_admins}
+        if admin_ids.intersection(authorized_admin_set):
+            chat_member = await namebot.get_chat_member(chat_id, namebot.id)
+            is_admin = chat_member.status in ["administrator", "creator"]
+            if is_admin:
+                authorized_chats.append(chat_id)
+                logging.warning(f"Chat {chat_id} added to authoized chats")
+                return True
         return False
-    return is_admin
+    except Exception as e:
+        logging.error(f"Error checking if chat {chat_id} is authorized: {e}")
+        return False
+
 
 
 async def ban_user_in_chat(chat_id: int, user_id: int):
@@ -117,10 +163,6 @@ async def handle_message(update: Update, context: CallbackContext):
         if update.message is None or hasattr(update.message, "chat") is False or update.message.chat is None:
             return
 
-        is_admin = await is_bot_admin_in_chat(update.message.chat.id)
-        if not is_admin:
-            return
-
         chat_type = update.message.chat.type
 
         # Exclude private chats with the bot
@@ -142,20 +184,22 @@ async def handle_message(update: Update, context: CallbackContext):
         logging.error(f"Error handling message: {e}")
     return
 
-
+# Authorization for this function is handled at the calling function level
 async def toggle(update: Update, context: CallbackContext):
     global active
     try:
-        is_admin = await is_bot_admin_in_chat(update.message.chat.id)
+        is_admin = await is_chat_authorized(update.message.chat.id)
         if not is_admin:
             return
 
         if active:
             await update.message.reply_text("NameBot has been deactivated in this chat.")
+            logging.warning("NameBot has been deactivated in this chat.")
             active=False
             return
 
         await update.message.reply_text("NameBot is now active in this chat.")
+        logging.warning("NameBot is now active in this chat.")
         active = True
     except Exception as e:
         logging.error(f"Error starting NameBot: {e}")
@@ -164,11 +208,13 @@ async def toggle(update: Update, context: CallbackContext):
 
 #############  ASYNCIO TASK FUNCTIONS  #############
 
+@authorized_chat_check
+@authorized_admin_check
 async def start_loop(update: Update, context: CallbackContext):
     asyncio.create_task(toggle(update, context))
     return
 
-
+@authorized_chat_check
 async def handle_message_loop(update: Update, context: CallbackContext):
     asyncio.create_task(handle_message(update, context))
     return
